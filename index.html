@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real Traveling Wave LED Simulator</title>
+    <style>
+        /* --- CSS styles matching your dark Tkinter theme --- */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #2d2d2d;
+            color: white;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            height: 100vh;
+            box-sizing: border-box;
+            gap: 20px;
+        }
+
+        #panel-frame {
+            width: 300px;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        h3 {
+            margin-top: 0;
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        select {
+            width: 100%;
+            padding: 8px;
+            background-color: white;
+            color: black;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .readout {
+            font-size: 15px;
+            margin: 10px 0;
+        }
+
+        #bg-label { color: #00ffcc; }
+        #wl-label { color: #ffcc00; }
+
+        .led-title {
+            font-size: 14px;
+            margin-top: 25px;
+            margin-bottom: 5px;
+        }
+
+        #led-bulb {
+            width: 100px;
+            height: 80px;
+            border: 3px ridge #aaa;
+            border-radius: 8px;
+            transition: background-color 0.2s;
+        }
+
+        #plot-frame {
+            flex-grow: 1;
+            background-color: #1e1e1e;
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+        }
+
+        #plot-title {
+            text-align: center;
+            font-size: 16px;
+            margin: 0 0 10px 0;
+        }
+
+        canvas {
+            width: 100%;
+            height: calc(100% - 30px);
+            background-color: #1e1e1e;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- --- UI App Frame Panels --- -->
+    <div id="panel-frame">
+        <h3>Select Substrate Material:</h3>
+        <select id="material-dropdown" onchange="updateUIElements()">
+            <option value="GaN">Gallium Nitride (GaN) - UV</option>
+            <option value="InGaN_Blue">Indium Gallium Nitride (InGaN) - Blue</option>
+            <option value="InGaN_Green">Indium Gallium Nitride (InGaN) - Green</option>
+            <option value="GaAsP">Gallium Arsenide Phosphide (GaAsP) - Yellow</option>
+            <option value="AlGaAs">Aluminum Gallium Arsenide (AlGaAs) - Red</option>
+            <option value="GaAs">Gallium Arsenide (GaAs) - Infrared</option>
+        </select>
+
+        <div id="bg-label" class="readout">Band Gap Energy (Eg): --</div>
+        <div id="wl-label" class="readout">Peak Wavelength (λ): --</div>
+
+        <div class="led-title">Simulated LED Die:</div>
+        <div id="led-bulb"></div>
+    </div>
+
+    <div id="plot-frame">
+        <div id="plot-title">Traveling Wave Packet Propagation</div>
+        <canvas id="waveCanvas"></canvas>
+    </div>
+
+    <!-- --- Physics engine and Canvas Animation Engine --- -->
+    <script>
+        // Material database dictionary
+        const MATERIALS = {
+            "GaN": 3.40,
+            "InGaN_Blue": 2.80,
+            "InGaN_Green": 2.40,
+            "GaAsP": 2.10,
+            "AlGaAs": 1.85,
+            "GaAs": 1.42
+        };
+
+        const canvas = document.getElementById('waveCanvas');
+        const ctx = canvas.getContext('2d');
+        let frame = 0;
+
+        // Approximates an RGB color from a wavelength in nanometers
+        function wlToRgb(wavelength) {
+            let wl = Math.floor(wavelength);
+            let R = 0, G = 0, B = 0;
+
+            if (380 <= wl && wl < 440) {
+                R = -(wl - 440) / (440 - 380); G = 0.0; B = 1.0;
+            } else if (440 <= wl && wl < 490) {
+                R = 0.0; G = (wl - 440) / (490 - 440); B = 1.0;
+            } else if (490 <= wl && wl < 510) {
+                R = 0.0; G = 1.0; B = -(wl - 510) / (510 - 490);
+            } else if (510 <= wl && wl < 580) {
+                R = (wl - 510) / (580 - 510); G = 1.0; B = 0.0;
+            } else if (580 <= wl && wl < 645) {
+                R = 1.0; G = -(wl - 645) / (645 - 580); B = 0.0;
+            } else if (645 <= wl && wl <= 780) {
+                R = 1.0; G = 0.0; B = 0.0;
+            } else {
+                R = 0.3; G = 0.3; B = 0.3;
+            }
+
+            let factor = (420 <= wl && wl <= 700) ? 1.0 : 
+                         (wl < 420 ? 0.3 + 0.7 * (wl - 380) / (420 - 380) : 
+                                     0.3 + 0.7 * (780 - wl) / (780 - 700));
+
+            return `rgb(${Math.floor(R * factor * 255)}, ${Math.floor(G * factor * 255)}, ${Math.floor(B * factor * 255)})`;
+        }
+
+        // Live calculation and text update engine
+        function updateUIElements() {
+            const dropdown = document.getElementById('material-dropdown');
+            const Eg = MATERIALS[dropdown.value];
+            const wavelength = 1240.0 / Eg;
+
+            document.getElementById('bg-label').innerText = `Band Gap Energy (Eg): ${Eg.toFixed(2)} eV`;
+            document.getElementById('wl-label').innerText = `Peak Wavelength (λ): ${wavelength.toFixed(1)} nm`;
+            
+            const ledColor = wlToRgb(wavelength);
+            document.getElementById('led-bulb').style.backgroundColor = ledColor;
+        }
+
+        // High-framerate physics calculation loop replacing Matplotlib
+        function animateWave() {
+            // Automatically scale canvas resolution up to match high DPI displays
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            ctx.scale(dpr, dpr);
+
+            const width = rect.width;
+            const height = rect.height;
+
+            // Clear previous graph frames
+            ctx.clearRect(0, 0, width, height);
+
+            // Get current parameters
+            const dropdown = document.getElementById('material-dropdown');
+            const Eg = MATERIALS[dropdown.value];
+            const wavelength = 1240.0 / Eg;
+
+            const ledColor = wlToRgb(wavelength);
+            const plotColor = ledColor === 'rgb(76, 76, 76)' ? 'purple' : ledColor;
+
+            // Draw graph labels, grid boundaries and ticks
+            ctx.strokeStyle = '#444444';
+            ctx.lineWidth = 1;
+            ctx.fillStyle = 'white';
+            ctx.font = '11px Arial';
+
+            // Y-Axis lines and markers
+            ctx.fillText("Electric Field Amplitude", 10, 20);
+            ctx.fillText("1.0 -", 15, 43);
+            ctx.fillText("0.0 -", 15, height - 37);
+
+            // X-Axis graph baseline limits
+            ctx.beginPath();
+            ctx.moveTo(40, height - 40);
+            ctx.lineTo(width - 20, height - 40);
+            ctx.stroke();
+            ctx.fillText("300 nm", 40, height - 20);
+            ctx.fillText("900 nm", width - 60, height - 20);
+            ctx.fillText("Wavelength Spectrum Position (nm)", width / 2 - 90, height - 5);
+
+            // Calculate active plot boundaries
+            const plotLeft = 40;
+            const plotRight = width - 20;
+            const plotWidth = plotRight - plotLeft;
+            const plotHeight = height - 80;
+            const plotBottom = height - 40;
+
+            // Physics loop variables
+            const sigma = 40; 
+            const k = (2.0 * Math.PI) / (wavelength * 0.1);
+            const omegaT = frame * 0.4;
+
+            // Compute math points for current time frame
+            ctx.beginPath();
+            ctx.moveTo(plotLeft, plotBottom);
+
+            let fillPoints = [];
+
+            for (let i = 0; i <= 200; i++) {
+                // Map screen coordinate index to physical nanometer scope (300 to 900)
+                let pct = i / 200;
+                let xPhys = 300 + pct * 600;
+                let xScreen = plotLeft + pct * plotWidth;
+
+                // 1. Physics Gaussian Wave Envelope calculation
+                let envelope = Math.exp(-0.5 * Math.pow((xPhys - wavelength) / sigma, 2));
+
+                // 2. Traveling wave phase shift velocity calculation
+                let travelingWave = Math.sin(k * xPhys - omegaT);
+                let yPhys = envelope * (0.5 + 0.5 * travelingWave);
+
+                // Convert math results into browser display height constraints
+                let yScreen = plotBottom - (yPhys * plotHeight);
+
+                ctx.lineTo(xScreen, yScreen);
+                fillPoints.push({x: xScreen, y: yScreen});
+            }
+
+            ctx.lineTo(plotRight, plotBottom);
+            
+            // Draw Wave line trace
+            ctx.strokeStyle = plotColor;
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            // Draw Area Alpha Fill
+            ctx.lineTo(plotLeft, plotBottom);
+            ctx.fillStyle = plotColor;
+            ctx.globalAlpha = 0.25;
+            ctx.fill();
+            ctx.globalAlpha = 1.0; // Reset canvas transparency settings
+
+            frame++;
+            requestAnimationFrame(animateWave);
+        }
+
+        // Initialize state configuration variables on startup
+        updateUIElements();
+        animateWave();
+    </script>
+</body>
+</html>
