@@ -19,9 +19,13 @@
         }
 
         #panel-frame {
-            width: 300px;
-            padding: 20px;
+            width: 325px;
+            padding: 10px;
             box-sizing: border-box;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
         }
 
         h3 {
@@ -38,26 +42,55 @@
             border: 1px solid #ccc;
             border-radius: 4px;
             font-size: 14px;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
         }
 
         .readout {
-            font-size: 15px;
-            margin: 10px 0;
+            font-size: 14px;
+            margin: 4px 0;
         }
 
-        #bg-label { color: #00ffcc; }
+        #ec-label { color: #ff6464; font-weight: bold; }
+        #ev-label { color: #6496ff; font-weight: bold; }
         #wl-label { color: #ffcc00; }
+        #th-label { color: #ff9933; }
 
-        .led-title {
+        .section-title {
             font-size: 14px;
-            margin-top: 25px;
+            margin-top: 15px;
             margin-bottom: 5px;
+            font-weight: bold;
+            color: #eee;
+        }
+
+        .slider-container {
+            margin: 10px 0 15px 0;
+            background: #3a3a3a;
+            padding: 10px;
+            border-radius: 6px;
+        }
+
+        .slider-container label {
+            font-size: 13px;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        input[type=range] {
+            width: 100%;
+        }
+
+        #band-canvas {
+            width: 100%;
+            height: 160px;
+            background-color: #1e1e1e;
+            border-radius: 6px;
+            margin-bottom: 15px;
         }
 
         #led-bulb {
             width: 100px;
-            height: 80px;
+            height: 50px;
             border: 3px ridge #aaa;
             border-radius: 8px;
             transition: background-color 0.2s;
@@ -79,7 +112,7 @@
             margin: 0 0 10px 0;
         }
 
-        canvas {
+        #waveCanvas {
             width: 100%;
             height: calc(100% - 30px);
             background-color: #1e1e1e;
@@ -100,10 +133,20 @@
             <option value="GaAs">Gallium Arsenide (GaAs) - Infrared</option>
         </select>
 
-        <div id="bg-label" class="readout">Band Gap Energy (Eg): --</div>
+        <div id="ec-label" class="readout">Conduction Band (Ec): --</div>
+        <div id="ev-label" class="readout">Valence Band (Ev): --</div>
         <div id="wl-label" class="readout">Peak Wavelength (λ): --</div>
+        <div id="th-label" class="readout">Thermal Energy (kBT): --</div>
 
-        <div class="led-title">Simulated LED Die:</div>
+        <div class="slider-container">
+            <label id="temp-label">Material Temperature: 300 K (27°C)</label>
+            <input type="range" id="temp-slider" min="77" max="500" value="300" oninput="updateUIElements()">
+        </div>
+
+        <div class="section-title">Energy Band Diagram:</div>
+        <canvas id="band-canvas"></canvas>
+
+        <div class="section-title">Simulated LED Die:</div>
         <div id="led-bulb"></div>
     </div>
 
@@ -114,21 +157,27 @@
 
     <!-- --- Physics engine and Canvas Animation Engine --- -->
     <script>
-        // Material database dictionary
+        // Data structure explicitly mapped to your exact list values.
+        // Conduction band scale adjusts properly to preserve your listed visual gaps.
         const MATERIALS = {
-            "GaN": 3.40,
-            "InGaN_Blue": 2.80,
-            "InGaN_Green": 2.40,
-            "GaAsP": 2.10,
-            "AlGaAs": 1.85,
-            "GaAs": 1.42
+            "GaN":        { ev: 3.10, ec: 6.50, eg: 3.40 }, // UV
+            "InGaN_Blue": { ev: 2.70, ec: 5.40, eg: 2.70 }, // Blue
+            "InGaN_Green":{ ev: 2.40, ec: 4.80, eg: 2.40 }, // Green
+            "GaAsP":      { ev: 2.10, ec: 4.20, eg: 2.10 }, // Yellow
+            "AlGaAs":     { ev: 1.80, ec: 3.60, eg: 1.80 }, // Red
+            "GaAs":       { ev: 1.40, ec: 2.80, eg: 1.40 }  // Infrared
         };
 
-        const canvas = document.getElementById('waveCanvas');
-        const ctx = canvas.getContext('2d');
+        const kB = 8.617333262145e-5;
+
+        const waveCanvas = document.getElementById('waveCanvas');
+        const waveCtx = waveCanvas.getContext('2d');
+        
+        const bandCanvas = document.getElementById('band-canvas');
+        const bandCtx = bandCanvas.getContext('2d');
+        
         let frame = 0;
 
-        // Approximates an RGB color from a wavelength in nanometers
         function wlToRgb(wavelength) {
             let wl = Math.floor(wavelength);
             let R = 0, G = 0, B = 0;
@@ -156,121 +205,207 @@
             return `rgb(${Math.floor(R * factor * 255)}, ${Math.floor(G * factor * 255)}, ${Math.floor(B * factor * 255)})`;
         }
 
-        // Live calculation and text update engine
+        function drawBandDiagram(ecEnergy, evEnergy, Eth, plotColor) {
+            const dpr = window.devicePixelRatio || 1;
+            const rect = bandCanvas.getBoundingClientRect();
+            bandCanvas.width = rect.width * dpr;
+            bandCanvas.height = rect.height * dpr;
+            bandCtx.scale(dpr, dpr);
+
+            const w = rect.width;
+            const h = rect.height;
+
+            bandCtx.clearRect(0, 0, w, h);
+
+            // Scale matches energy space up to 7.0 eV total window size
+            const minBound = 0.0;
+            const maxBound = 7.0;
+            const padding = 20;
+            const usableHeight = h - (padding * 2);
+
+            // FIXED PIXEL MAPPING: Larger numbers are subtracted from maxBound, 
+            // forcing higher numbers to move UP visually on the display screen.
+            const ecY = padding + ((maxBound - ecEnergy) / (maxBound - minBound)) * usableHeight;
+            const evY = padding + ((maxBound - evEnergy) / (maxBound - minBound)) * usableHeight;
+
+            // 1. Conduction Band (Ec Block)
+            bandCtx.fillStyle = 'rgba(255, 100, 100, 0.15)';
+            bandCtx.fillRect(65, ecY - 20, w - 85, 20);
+            bandCtx.strokeStyle = '#ff6464';
+            bandCtx.lineWidth = 2;
+            bandCtx.beginPath();
+            bandCtx.moveTo(65, ecY);
+            bandCtx.lineTo(w - 20, ecY);
+            bandCtx.stroke();
+
+            // 2. Valence Band (Ev Block)
+            bandCtx.fillStyle = 'rgba(100, 150, 255, 0.15)';
+            bandCtx.fillRect(65, evY, w - 85, 20);
+            bandCtx.strokeStyle = '#6496ff';
+            bandCtx.lineWidth = 2;
+            bandCtx.beginPath();
+            bandCtx.moveTo(65, evY);
+            bandCtx.lineTo(w - 20, evY);
+            bandCtx.stroke();
+
+            // Display values next to the matching graphics lines
+            bandCtx.font = '11px Arial';
+            bandCtx.textAlign = 'right';
+            
+            bandCtx.fillStyle = '#ff6464';
+            bandCtx.fillText(`${ecEnergy.toFixed(2)} eV`, 60, ecY + 4);
+
+            bandCtx.fillStyle = '#6496ff';
+            bandCtx.fillText(`${evEnergy.toFixed(2)} eV`, 60, evY + 4);
+
+            // 3. Recombination Arrow
+            bandCtx.strokeStyle = plotColor;
+            bandCtx.lineWidth = 2;
+            bandCtx.beginPath();
+            bandCtx.moveTo(w / 2 + 15, ecY + 2);
+            bandCtx.lineTo(w / 2 + 15, evY - 2);
+            bandCtx.stroke();
+
+            bandCtx.fillStyle = plotColor;
+            bandCtx.beginPath();
+            bandCtx.moveTo(w / 2 + 15, evY - 2);
+            bandCtx.lineTo(w / 2 + 11, evY - 6);
+            bandCtx.lineTo(w / 2 + 19, evY - 6);
+            bandCtx.fill();
+            
+            // Thermal excitation box
+            let heatHeight = (Eth / (maxBound - minBound)) * usableHeight * 8;
+            bandCtx.fillStyle = 'rgba(255, 153, 51, 0.2)';
+            bandCtx.fillRect(65, ecY, w - 85, Math.min(heatHeight, evY - ecY));
+        }
+
         function updateUIElements() {
             const dropdown = document.getElementById('material-dropdown');
-            const Eg = MATERIALS[dropdown.value];
-            const wavelength = 1240.0 / Eg;
+            const tempSlider = document.getElementById('temp-slider');
+            
+            const matData = MATERIALS[dropdown.value];
+            const T = parseInt(tempSlider.value);
+            
+            const Eth = kB * T; 
+            const wavelength = 1240.0 / matData.eg;
 
-            document.getElementById('bg-label').innerText = `Band Gap Energy (Eg): ${Eg.toFixed(2)} eV`;
+            // Values sync strictly to your definitions 
+            const ecEnergy = matData.ec;
+            const evEnergy = matData.ev;
+
+            document.getElementById('temp-label').innerText = `Material Temperature: ${T} K (${(T - 273).toFixed(0)}°C)`;
+            document.getElementById('ec-label').innerText = `Conduction Band Edge (Ec): ${ecEnergy.toFixed(2)} eV`;
+            document.getElementById('ev-label').innerText = `Valence Band Edge (Ev): ${evEnergy.toFixed(2)} eV`;
             document.getElementById('wl-label').innerText = `Peak Wavelength (λ): ${wavelength.toFixed(1)} nm`;
+            document.getElementById('th-label').innerText = `Thermal Energy (kBT): ${(Eth * 1000).toFixed(1)} meV`;
             
             const ledColor = wlToRgb(wavelength);
             document.getElementById('led-bulb').style.backgroundColor = ledColor;
+
+            const plotColor = (ledColor === 'rgb(76, 76, 76)') ? 'purple' : ledColor;
+            
+            drawBandDiagram(ecEnergy, evEnergy, Eth, plotColor);
         }
 
-        // High-framerate physics calculation loop replacing Matplotlib
         function animateWave() {
-            // Automatically scale canvas resolution up to match high DPI displays
             const dpr = window.devicePixelRatio || 1;
-            const rect = canvas.getBoundingClientRect();
-            canvas.width = rect.width * dpr;
-            canvas.height = rect.height * dpr;
-            ctx.scale(dpr, dpr);
+            const rect = waveCanvas.getBoundingClientRect();
+            waveCanvas.width = rect.width * dpr;
+            waveCanvas.height = rect.height * dpr;
+            waveCtx.scale(dpr, dpr);
 
             const width = rect.width;
             const height = rect.height;
 
-            // Clear previous graph frames
-            ctx.clearRect(0, 0, width, height);
+            waveCtx.clearRect(0, 0, width, height);
 
-            // Get current parameters
             const dropdown = document.getElementById('material-dropdown');
-            const Eg = MATERIALS[dropdown.value];
-            const wavelength = 1240.0 / Eg;
+            const matData = MATERIALS[dropdown.value];
+            const wavelength = 1240.0 / matData.eg;
 
             const ledColor = wlToRgb(wavelength);
-            const plotColor = ledColor === 'rgb(76, 76, 76)' ? 'purple' : ledColor;
+            const plotColor = (ledColor === 'rgb(76, 76, 76)') ? 'purple' : ledColor;
 
-            // Draw graph labels, grid boundaries and ticks
-            ctx.strokeStyle = '#444444';
-            ctx.lineWidth = 1;
-            ctx.fillStyle = 'white';
-            ctx.font = '11px Arial';
+            waveCtx.strokeStyle = '#444444';
+            waveCtx.lineWidth = 1;
+            waveCtx.fillStyle = '#ffffff';
+            waveCtx.font = '11px Arial';
 
-            // Y-Axis lines and markers
-            ctx.fillText("Electric Field Amplitude", 10, 20);
-            ctx.fillText("1.0 -", 15, 43);
-            ctx.fillText("0.0 -", 15, height - 37);
-
-            // X-Axis graph baseline limits
-            ctx.beginPath();
-            ctx.moveTo(40, height - 40);
-            ctx.lineTo(width - 20, height - 40);
-            ctx.stroke();
-            ctx.fillText("300 nm", 40, height - 20);
-            ctx.fillText("900 nm", width - 60, height - 20);
-            ctx.fillText("Wavelength Spectrum Position (nm)", width / 2 - 90, height - 5);
-
-            // Calculate active plot boundaries
-            const plotLeft = 40;
-            const plotRight = width - 20;
+            const plotLeft = 50;
+            const plotRight = width - 30;
             const plotWidth = plotRight - plotLeft;
-            const plotHeight = height - 80;
             const plotBottom = height - 40;
+            const plotTop = 40;
+            const plotHeight = plotBottom - plotTop;
 
-            // Physics loop variables
+            waveCtx.beginPath();
+            waveCtx.moveTo(plotLeft, plotTop);
+            waveCtx.lineTo(plotLeft, plotBottom);
+            waveCtx.lineTo(plotRight, plotBottom);
+            waveCtx.stroke();
+
+            waveCtx.textAlign = 'right';
+            waveCtx.fillText("1.0 -", plotLeft - 5, plotTop + 4);
+            waveCtx.fillText("0.0 -", plotLeft - 5, plotBottom + 4);
+            
+            waveCtx.save();
+            waveCtx.translate(15, (plotTop + plotBottom) / 2);
+            waveCtx.rotate(-Math.PI / 2);
+            waveCtx.textAlign = 'center';
+            waveCtx.fillText("Electric Field Amplitude", 0, 0);
+            waveCtx.restore();
+
+            waveCtx.textAlign = 'center';
+            waveCtx.fillText("300 nm", plotLeft, plotBottom + 18);
+            waveCtx.fillText("900 nm", plotRight, plotBottom + 18);
+            waveCtx.fillText("Wavelength Spectrum Position (nm)", (plotLeft + plotRight) / 2, plotBottom + 32);
+
             const sigma = 40; 
             const k = (2.0 * Math.PI) / (wavelength * 0.1);
             const omegaT = frame * 0.4;
 
-            // Compute math points for current time frame
-            ctx.beginPath();
-            ctx.moveTo(plotLeft, plotBottom);
+            let wavePoints = [];
+            const segments = 300; 
 
-            let fillPoints = [];
-
-            for (let i = 0; i <= 200; i++) {
-                // Map screen coordinate index to physical nanometer scope (300 to 900)
-                let pct = i / 200;
-                let xPhys = 300 + pct * 600;
+            for (let i = 0; i <= segments; i++) {
+                let pct = i / segments;
+                let xPhys = 300 + pct * 600; 
                 let xScreen = plotLeft + pct * plotWidth;
 
-                // 1. Physics Gaussian Wave Envelope calculation
                 let envelope = Math.exp(-0.5 * Math.pow((xPhys - wavelength) / sigma, 2));
-
-                // 2. Traveling wave phase shift velocity calculation
                 let travelingWave = Math.sin(k * xPhys - omegaT);
-                let yPhys = envelope * (0.5 + 0.5 * travelingWave);
+                let yVal = envelope * (0.5 + 0.5 * travelingWave);
+                let yScreen = plotBottom - (yVal / 1.1) * plotHeight;
 
-                // Convert math results into browser display height constraints
-                let yScreen = plotBottom - (yPhys * plotHeight);
-
-                ctx.lineTo(xScreen, yScreen);
-                fillPoints.push({x: xScreen, y: yScreen});
+                wavePoints.push({ x: xScreen, y: yScreen });
             }
 
-            ctx.lineTo(plotRight, plotBottom);
+            waveCtx.beginPath();
+            waveCtx.moveTo(plotLeft, plotBottom);
+            for (let pt of wavePoints) {
+                waveCtx.lineTo(pt.x, pt.y);
+            }
+            waveCtx.lineTo(plotRight, plotBottom);
+            waveCtx.closePath();
             
-            // Draw Wave line trace
-            ctx.strokeStyle = plotColor;
-            ctx.lineWidth = 2.5;
-            ctx.stroke();
+            waveCtx.fillStyle = plotColor.replace('rgb', 'rgba').replace(')', ', 0.25)');
+            waveCtx.fill();
 
-            // Draw Area Alpha Fill
-            ctx.lineTo(plotLeft, plotBottom);
-            ctx.fillStyle = plotColor;
-            ctx.globalAlpha = 0.25;
-            ctx.fill();
-            ctx.globalAlpha = 1.0; // Reset canvas transparency settings
+            waveCtx.beginPath();
+            waveCtx.moveTo(wavePoints.x, wavePoints.y);
+            for (let i = 1; i < wavePoints.length; i++) {
+                waveCtx.lineTo(wavePoints[i].x, wavePoints[i].y);
+            }
+            waveCtx.strokeStyle = plotColor;
+            waveCtx.lineWidth = 2.5;
+            waveCtx.stroke();
 
             frame++;
             requestAnimationFrame(animateWave);
         }
 
-        // Initialize state configuration variables on startup
         updateUIElements();
-        animateWave();
+        requestAnimationFrame(animateWave);
     </script>
 </body>
 </html>
